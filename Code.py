@@ -5,7 +5,13 @@ import random
 stereo = cv2.StereoBM_create(numDisparities=16*7, blockSize=17)
 fast = cv2.FastFeatureDetector_create()
 
-CamMatrix = [[721.5377, 0.0, 609.5593], [ 0.0, 721.5377, 172.8540], [ 0.0, 0.0, 1.0]]
+CamMatrixR = [[721.5377, 0.0, 609.5593, 0],
+             [ 0.0, 721.5377, 172.8540, 0],
+             [ 0.0, 0.0, 1.0, 0]]
+
+CamMatrixL = [[721.5377, 0.0, 609.5593, -387.5744],
+             [ 0.0, 721.5377, 172.8540, 0],
+             [ 0.0, 0.0, 1.0, 0]]
 
 
 def compute_blur(img):
@@ -17,7 +23,7 @@ def compute_disparity(im1, im2):
 
 def get_coordinate(kp, depth):
     matrix = CamMatrix
-    d = depth
+    d = depth #This is where we are stucked
     u = int(kp.pt[0])
     v = int(kp.pt[1])
     
