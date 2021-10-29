@@ -18,8 +18,10 @@ def compute_blur(img):
     return cv2.bilateralFilter(img, 3, 10, 10)
 
 def compute_disparity(im1, im2):
-    disparity = stereo.compute(im1, im2)
-    return np.divide(disparity, 16.0)
+    cv2.imwrite('depth.png',stereo.compute(im1, im2))
+    return stereo.compute(im1, im2)
+    # disparity = stereo.compute(im1, im2)
+    # return np.divide(disparity, 16.0)
 
 def get_coordinate(kp, depth):
     matrix = CamMatrix
