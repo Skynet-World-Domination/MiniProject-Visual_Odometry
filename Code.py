@@ -1,39 +1,31 @@
 import numpy as np
 import cv2
 import random
+from scipy.spatial import distance
+import matplotlib.pyplot as plt
 
-stereo = cv2.StereoBM_create(numDisparities=16*7, blockSize=17)
+
+
+stereo = cv2.StereoBM_create(numDisparities=192, blockSize=31)
 fast = cv2.FastFeatureDetector_create()
 
-CamMatrixR = [[721.5377, 0.0, 609.5593, 0],
-             [ 0.0, 721.5377, 172.8540, 0],
-             [ 0.0, 0.0, 1.0, 0]]
+CamMatrix = np.asarray([[721.5377, 0.0, 609.5593],
+             [ 0.0, 721.5377, 172.8540],
+             [ 0.0, 0.0, 1.0]])
 
-CamMatrixL = [[721.5377, 0.0, 609.5593, -387.5744],
-             [ 0.0, 721.5377, 172.8540, 0],
-             [ 0.0, 0.0, 1.0, 0]]
-
+fMetric = 0.004 # 
+pixelSize = fMetric/CamMatrix[0,0] # 
+fPixels = CamMatrix[0,0]
+b = 0.54 # 
 
 def compute_blur(img):
     return cv2.bilateralFilter(img, 3, 10, 10)
 
 def compute_disparity(im1, im2):
-    cv2.imwrite('depth.png',stereo.compute(im1, im2))
+    cv2.imwrite('disparity.png',stereo.compute(im1, im2))
     return stereo.compute(im1, im2)
     # disparity = stereo.compute(im1, im2)
     # return np.divide(disparity, 16.0)
-
-def get_coordinate(kp, depth):
-    matrix = CamMatrix
-    d = depth #This is where we are stucked
-    u = int(kp.pt[0])
-    v = int(kp.pt[1])
-    
-    x = depth*(u-matrix[0,2])/(matrix[0,0]*1000)
-    y = depth*(v-matrix[1,2])/(matrix[1,1]*1000)
-    z = depth/1000
-
-    return [X,Y,Z]
 
 def keypoint_extraction(img):
     #size of descriptor
@@ -75,7 +67,45 @@ def match_features(S):
         if fb_matches[fb_bar] == i:
             matches.append([i,fb_bar])
     return matches
+
+def get_coordinate(kp, disparity_map):
+
+    depth_map = (b*fPixels)/disparity_map 
+    plt.figure("StereoBM disparity map")
+    plt.imshow(depth_map, 'jet', vmin=0, vmax=20)
+
+    matrix = CamMatrix
+    u = int(kp.pt[1])
+    v = int(kp.pt[0])
+    depth = depth_map[u][v]
     
+    X = depth*(u-matrix[0][2])/(matrix[0][0])
+    Y = depth*(v-matrix[1][2])/(matrix[1][1])
+    Z = depth
+    return [X,Y,Z]
+
+def compute_consistency(matches, Da, Db):
+    treshold = 1
+    W = np.zeros((len(matches),len(matches)))
+    
+    for i, match1 in enumerate(matches):
+        kpa1 = match1[0]
+        kpb1 = match1[1]
+        Wa1 = get_coordinate(kpa1, Da)
+        Wb1 = get_coordinate(kpb1, Db)
+        for j, match2 in enumerate(matches):
+            kpa2 = match2[0]
+            kpb2 = match2[1]
+            Wa2 = get_coordinate(kpa2, Da)
+            Wb2 = get_coordinate(kpb2, Db)
+
+            consistency = abs(distance.euclidean(Wa1, Wa2) - distance.euclidean(Wb1, Wb2))
+            #print(i,j)
+            #print(consistency)
+
+            if consistency < treshold:
+                W[i][j] = 1
+    return W.astype(int)
 
 #Download images, they are already rectified
 Ja_L = cv2.imread('2011_09_26/image_00/data/0000000000.png', 0)  # 0 flag returns a grayscale image
@@ -96,33 +126,32 @@ Jb_R = compute_blur(Jb_R)
 Da = compute_disparity(Ja_L, Ja_R)
 Db = compute_disparity(Jb_L, Jb_R)
 
+depth = (b*fPixels)/Da 
+plt.figure("StereoBM disparity map")
+plt.imshow(depth, 'jet', vmin=0, vmax=20)
+
 # Detect keypoints of each image
-Kpa_L, Dsa_L = keypoint_extraction(Ja_L)
-Kpa_R, Dsa_R = keypoint_extraction(Ja_R)
-Kpb_L, Dsb_L = keypoint_extraction(Jb_L)
-Kpb_R, Dsb_R = keypoint_extraction(Jb_R)
+Kpa, Dsa = keypoint_extraction(Ja_L)
+Kpb, Dsb = keypoint_extraction(Jb_L)
 
-S_L = compute_S_matrix(Dsa_L, Dsb_L)
-matches_L_indexes = match_features(S_L)
-
-S_R = compute_S_matrix(Dsa_R, Dsb_R)
-matches_R_indexes = match_features(S_R)
+S = compute_S_matrix(Dsa, Dsb)
+matchesIndexes = match_features(S)
 
 
 # Construct the matches matrix full of features instead of feature's indexes
-matches_R = []
-matches_L = []
-for match in matches_L_indexes:
-    matches_L.append([Kpa_L[match[0]], Kpb_L[match[1]]])
+matches = []
 
-for match in matches_R_indexes:
-    matches_R.append([Kpa_R[match[0]], Kpb_R[match[1]]])
+for match in matchesIndexes:
+    matches.append([Kpa[match[0]], Kpb[match[1]]])
+
+
+# Compute consistency matrix :
 
 
 #Get real world coordinates of each features in the matches
 
-
-
+W = compute_consistency(matches, Da, Db)
+np.savetxt('W.csv', W, delimiter=',')
 
 '''
 im_L = cv2.hconcat([Ja_L, Jb_L])
