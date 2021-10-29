@@ -139,11 +139,14 @@ def compute_Q(W):
 
     while True:
         # Find set of matches compatibles with the matches in the clique
-        candidates = []
+        candidates = np.arange(len(W))
+        subCandidates = []
         for q in Q:
             for i in range(len(W)):
-                if W[q][i]==1 and not i in Q and not i in candidates:
-                    candidates.append(i)
+                if W[q][i]==1 and not i in Q and not i in subCandidates:
+                    subCandidates.append(i)
+            candidates = np.intersect1d(candidates,subCandidates)
+        print(candidates)
         if len(candidates) == 0:
             break
         #score of candidates
