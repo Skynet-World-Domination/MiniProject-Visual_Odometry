@@ -80,7 +80,7 @@ def match_features(S):
     #index of minimum value for each fa
     fa_matches = np.zeros(len(S))
     #index of minimum value for each fb
-    fb_matches = np.zeros(len(S))
+    fb_matches = np.zeros(len(S[0]))
     matches = []
     for i in range(len(S)):
         fa_matches[i] = np.argmin(S[i])
@@ -106,7 +106,7 @@ def get_coordinate(kp, disparity_map):
     return [X,Y,Z]
 
 def compute_consistency(matches, Da, Db):
-    treshold = 1
+    treshold = 0.5
     W = np.zeros((len(matches),len(matches)))
     
     for i, match1 in enumerate(matches):
@@ -127,6 +127,33 @@ def compute_consistency(matches, Da, Db):
             if consistency < treshold:
                 W[i][j] = 1
     return W.astype(int)
+
+def compute_Q(W):
+    matchesConsistencyScore = []
+    # List of indexes of matches that we are going to keep
+    Q = []
+    for i in range(len(W)):
+        matchesConsistencyScore.append(sum(W[i]))
+    # clique initialisation
+    Q.append(np.argmax(matchesConsistencyScore))
+
+    while True:
+        # Find set of matches compatibles with the matches in the clique
+        candidates = []
+        for q in Q:
+            for i in range(len(W)):
+                if W[q][i]==1 and not i in Q and not i in candidates:
+                    candidates.append(i)
+        if len(candidates) == 0:
+            break
+        #score of candidates
+        candidatesScore = [matchesConsistencyScore[i] for i in candidates]
+        # find the index of the best candidate
+        bestCandidateIndex = np.argmax(candidatesScore)
+        # add this candidate to Q
+        Q.append(candidates[bestCandidateIndex])
+    
+    return Q
 
 #Download images, they are already rectified
 Ja_L = cv2.imread('2011_09_26/image_00/data/0000000000.png', 0)  # 0 flag returns a grayscale image
@@ -165,18 +192,20 @@ matchesIndexes = match_features(S)
 
 # Construct the matches matrix full of features instead of feature's indexes
 matches = []
-
 for match in matchesIndexes:
     matches.append([Kpa[match[0]], Kpb[match[1]]])
 
 
 # Compute consistency matrix :
-
-
-#Get real world coordinates of each features in the matches
-
 W = compute_consistency(matches, Da, Db)
 np.savetxt('W.csv', W, delimiter=',')
+
+# Compute Q, set of matches in the inlier
+Q = compute_Q(W)
+# Q is the set of indexes of the matches that we are going to keep, let's exctract those matches
+inlierMatches = [matches[i] for i in Q]
+
+
 
 '''
 keypoints_fail = matches[-2]
