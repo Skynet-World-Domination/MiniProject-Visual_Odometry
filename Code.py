@@ -46,7 +46,7 @@ def keypoint_extraction(img, disparity):
     m = int(m/2) 
     keypoints = fast.detect(img)
     keypoints = sorted(keypoints, key=lambda x: -x.response)
-    keypoints = keypoints[0:300]
+    keypoints = keypoints[0:500]
 
     # Remove kpts with unknow disparity (=15)
     list_of_bad_kp = []
@@ -106,7 +106,7 @@ def get_coordinate(kp, disparity_map):
     return [X,Y,Z]
 
 def compute_consistency(matches, Da, Db):
-    treshold = 0.5
+    treshold = 5
     W = np.zeros((len(matches),len(matches)))
     
     for i, match1 in enumerate(matches):
@@ -137,16 +137,16 @@ def compute_Q(W):
     # clique initialisation
     Q.append(np.argmax(matchesConsistencyScore))
 
+    candidates = np.arange(len(W))
+    
     while True:
         # Find set of matches compatibles with the matches in the clique
-        candidates = np.arange(len(W))
-        subCandidates = []
         for q in Q:
+            subCandidates = []
             for i in range(len(W)):
                 if W[q][i]==1 and not i in Q and not i in subCandidates:
                     subCandidates.append(i)
             candidates = np.intersect1d(candidates,subCandidates)
-        print(candidates)
         if len(candidates) == 0:
             break
         #score of candidates
