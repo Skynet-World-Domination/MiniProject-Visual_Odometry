@@ -2,16 +2,15 @@ import numpy as np
 import cv2
 import random
 from scipy.spatial import distance
-import matplotlib.pyplot as plt
 from scipy.optimize import least_squares
 from math import cos, sin
+import matplotlib.pyplot as plt
 
 
-window_size = 3
+# Parameters for the disparity map computation
+window_size = 4
 min_disp = 2
 num_disp = 128
-# Remember that the disparity must be divisible with 16
-
 stereo = cv2.StereoSGBM_create(minDisparity = min_disp,
     numDisparities = num_disp,
     blockSize = 5,
@@ -25,13 +24,16 @@ stereo = cv2.StereoSGBM_create(minDisparity = min_disp,
 
 fast = cv2.FastFeatureDetector_create()
 
-CamMatrix = np.asarray([[721.5377, 0.0, 609.5593, 0],
-             [ 0.0, 721.5377, 172.8540, 0],
+CamMatrix = np.asarray([[707.0912, 0.0, 601.8873, 0],
+             [ 0.0, 707.0912, 183.1104, 0],
              [ 0.0, 0.0, 1.0, 0]])
 
+GroundTruth = np.asarray([[0.9999978, 0.0005272628, -0.002066935, -0.04690294],
+                          [-0.0005296506, 0.9999992, -0.001154865, -0.02839928],
+                          [0.002066324, 0.001155958, 0.9999971, 0.8586941],
+                          [0, 0, 0, 1]])
 
 fMetric = 0.004 
-# pixelSize = fMetric/CamMatrix[0,0] 
 fPixels = CamMatrix[0,0]
 b = 0.54 
 
@@ -41,25 +43,32 @@ def compute_blur(img):
 def compute_disparity(im1, im2):
     disparity = stereo.compute(im1, im2).astype(np.float32)
     disparity = np.divide(disparity, 16.0)
-    cv2.imwrite('disparity.png',disparity)
     return disparity
 
 def keypoint_extraction(img, disparity):
     #size of descriptor
-    m = 7
+    m = 13
     m = int(m/2) 
     keypoints = fast.detect(img)
+    
+    # Store keypoints by response and keep only the 1200 firsts one to reduce computation time
     keypoints = sorted(keypoints, key=lambda x: -x.response)
-    keypoints = keypoints[0:300]
-
-    # Remove kpts with unknow disparity (=15)
+    keypoints = keypoints[0:1200]
+    
+    # Remove kpts with unknow disparity (=1) or too close from edge
     list_of_bad_kp = []
     for i, kpt in enumerate(keypoints):
         kpt_x = int(kpt.pt[0])
         kpt_y = int(kpt.pt[1])
-        if (disparity[kpt_y][kpt_x] == 15):
+        if kpt_x<7 or kpt_x>len(img[0])-7:
+            list_of_bad_kp.append(i)
+        elif kpt_y<7 or kpt_y>len(img)-7:
+            list_of_bad_kp.append(i)
+        elif (disparity[kpt_y][kpt_x] == 1):
             list_of_bad_kp.append(i)
     keypoints = np.delete(keypoints,list_of_bad_kp)
+
+    #Descriptor creation
     descriptors = []
     for i, kpt in enumerate(keypoints):
         kpt_x = int(kpt.pt[0])
@@ -67,7 +76,7 @@ def keypoint_extraction(img, disparity):
         
         descriptor = img[kpt_y-m:kpt_y+m+1, kpt_x-m:kpt_x+m+1]
         descriptor = descriptor.ravel()
-        descriptor = np.delete(descriptor, 24)
+        descriptor = np.delete(descriptor, int((m*m-1)/2))
         descriptors.append(descriptor)
     return keypoints, descriptors
 
@@ -85,17 +94,20 @@ def match_features(S):
     #index of minimum value for each fb
     fb_matches = np.zeros(len(S[0]))
     matches = []
+    # We create a list of matching features starting from fa and fb
     for i in range(len(S)):
         fa_matches[i] = np.argmin(S[i])
     for i in range(len(S[0])):
         fb_matches[i] = np.argmin(S[:,i])
-
+        
+    # We check constistency between those two lists to obtain the matches
     for i,fb_bar in enumerate(fa_matches):
         fb_bar = int(fb_bar)
         if fb_matches[fb_bar] == i:
             matches.append([i,fb_bar])
     return matches
 
+# Give 3D coordinates from 2D coordinates
 def get_coordinate(kp, disparity_map):
     depth_map = (b*fPixels)/disparity_map 
     matrix = CamMatrix
@@ -108,10 +120,11 @@ def get_coordinate(kp, disparity_map):
     Z = depth
     return [X,Y,Z]
 
+# Create the consistency matrix of the matches by comparing real world distance between features
 def compute_consistency(matches, Da, Db):
-    treshold = 3
+    # Maximum distance difference allowed
+    treshold = 1
     W = np.zeros((len(matches),len(matches)))
-    
     for i, match1 in enumerate(matches):
         kpa1 = match1[0]
         kpb1 = match1[1]
@@ -122,11 +135,7 @@ def compute_consistency(matches, Da, Db):
             kpb2 = match2[1]
             Wa2 = get_coordinate(kpa2, Da)
             Wb2 = get_coordinate(kpb2, Db)
-
             consistency = abs(distance.euclidean(Wa1, Wa2) - distance.euclidean(Wb1, Wb2))
-            #print(i,j)
-            #print(consistency)
-
             if consistency < treshold:
                 W[i][j] = 1
     return W.astype(int)
@@ -137,21 +146,27 @@ def compute_Q(W):
     Q = []
     for i in range(len(W)):
         matchesConsistencyScore.append(sum(W[i]))
-    # clique initialisation
+    # Clique initialisation, we take the match with the best score
     Q.append(np.argmax(matchesConsistencyScore))
 
+    # We start by adding all the matches as candidates
     candidates = np.arange(len(W))
     
     while True:
         # Find set of matches compatibles with the matches in the clique
         for q in Q:
-            subCandidates = []
+            compatibles = []
             for i in range(len(W)):
-                if W[q][i]==1 and not i in Q and not i in subCandidates:
-                    subCandidates.append(i)
-            candidates = np.intersect1d(candidates,subCandidates)
+                if W[q][i]==1 and not i in Q and not i in compatibles:
+                    compatibles.append(i)
+            #Intersect this list of compatibles with the list of candidates to keep only matches compatibles with all matches in the clique
+            candidates = np.intersect1d(candidates,compatibles)
+
+        # If there is no more candidtes, exit the while loop
         if len(candidates) == 0:
             break
+        
+        ## Choose the candidates with the best score to add it in the clique
         #score of candidates
         candidatesScore = [matchesConsistencyScore[i] for i in candidates]
         # find the index of the best candidate
@@ -161,8 +176,8 @@ def compute_Q(W):
     
     return Q
 
-
-def estimateMotion(params, imPtsa, imPtsb, worldsPtsa, worldsPtsb, CamMatrix):
+# Create a transformation matrix with pitch, roll, yaw, Tx, Ty, Tz
+def createTransfomrationMatrix(params):
     motionMatrix = np.eye(4)
     #https://mathworld.wolfram.com/EulerAngles.html
     theta = params[0]
@@ -186,50 +201,54 @@ def estimateMotion(params, imPtsa, imPtsb, worldsPtsa, worldsPtsb, CamMatrix):
     motionMatrix[0,3] = params[3]
     motionMatrix[1,3] = params[4]
     motionMatrix[2,3] = params[5]
+    
+    return motionMatrix
+
+# Compute the equation describe in A5 and return the residuals (the error)
+def estimateMotion(params, imPtsa, imPtsb, worldsPtsa, worldsPtsb, CamMatrix):
+    motionMatrix = createTransfomrationMatrix(params)
+
     Pdelt = np.matmul(CamMatrix,motionMatrix)
     Pdeltinv = np.matmul(CamMatrix, np.linalg.inv(motionMatrix))
     error1 = np.zeros((len(imPtsa),3))
     error2 = np.zeros((len(imPtsa),3))
     for i in range(len(imPtsa)):
         Pred1 = np.matmul(Pdelt, np.asarray(worldsPtsb[i]).reshape(-1,1))
+        # Normalisation to stay in homogeneous space
         Pred1 /= Pred1[-1]
         Pred2 = np.matmul(Pdeltinv, np.asarray(worldsPtsa[i]).reshape(-1,1))
         Pred2 /= Pred2[-1]
         err1 = np.asarray(imPtsa[i]).reshape(-1,1) - Pred1
         err2 = np.asarray(imPtsb[i]).reshape(-1,1) - Pred2
+        #Creation of the reisuldals : list of error for x and y coordinate
         error1[i,:] = np.squeeze(err1)
         error2[i,:] = np.squeeze(err2)
-
         residual = np.vstack((error1,error2))
-    #print(residual.flatten())
     return residual.flatten()
 
 #Download images, they are already rectified
-Ja_L = cv2.imread('2011_09_26/image_00/data/0000000075.png', 0)  # 0 flag returns a grayscale image
-Ja_R = cv2.imread('2011_09_26/image_01/data/0000000075.png', 0)
+Ja_L = cv2.imread('KITTI/00/image_0/000000.png', 0)
+Ja_R = cv2.imread('KITTI/00/image_1/000000.png', 0)
 
-Jb_L = cv2.imread('2011_09_26/image_00/data/0000000076.png', 0)
-Jb_R = cv2.imread('2011_09_26/image_01/data/0000000076.png', 0)
+Jb_L = cv2.imread('KITTI/00/image_0/000001.png', 0)
+Jb_R = cv2.imread('KITTI/00/image_1/000001.png', 0)
 
-
+# We skiped pre-filtering to obtain better results
+'''
 # Pre-filtering
 Ja_L = compute_blur(Ja_L)
 Ja_R = compute_blur(Ja_R)
 Jb_L = compute_blur(Jb_L)
 Jb_R = compute_blur(Jb_R)
-
+'''
 
 # Disparity images
 Da = compute_disparity(Ja_L, Ja_R)
 Db = compute_disparity(Jb_L, Jb_R)
 
 ##plt.figure("StereoBM disparity map")
-##plt.imshow(Da, 'jet', vmin=0, vmax=20)
+##plt.imshow(Da, 'jet', vmin=0, vmax=70)
 ##plt.show()
-
-depth = (b*fPixels)/Da 
-cv2.imwrite('depth.png',depth)
-
 
 # Detect keypoints of each image and get descriptors
 Kpa, Dsa = keypoint_extraction(Ja_L, Da)
@@ -255,30 +274,13 @@ Q = compute_Q(W)
 # Q is the set of indexes of the matches that we are going to keep, let's exctract those matches
 inlierMatches = [matches[i] for i in Q]
 
-## = np.asarray(inlierMatches)[:,0]
-## = np.asarray(inlierMatches)[:,1]
-
+# Create parameters to run the optimizer
 imPtsa = []
 imPtsb = []
 worldsPtsa = []
 worldsPtsb = []
 
-output = Ja_L
-kpaa=np.asarray(inlierMatches)[:,0]
-output = cv2.drawKeypoints(Ja_L, kpaa, output)
-output2 = Jb_L
-kpbb=np.asarray(inlierMatches)[:,1]
-output2 = cv2.drawKeypoints(Jb_L, kpbb, output2)
-cv2.imwrite('test.png', output)
-cv2.imwrite('test2.png', output2)
-
 for i in range(len(inlierMatches)):
-##    imPtsa.append([inlierMatches[i][0].pt[0]-621, inlierMatches[i][0].pt[1]-187.5])
-##    imPtsa[i].append(1)
-##    print(imPtsa[i])
-##    #1242 × 375
-##    #621 x 187.5
-##
     imPtsa.append([inlierMatches[i][0].pt[0], inlierMatches[i][0].pt[1]])
     imPtsa[i].append(1)
     imPtsb.append([inlierMatches[i][1].pt[0], inlierMatches[i][1].pt[1]])
@@ -288,44 +290,41 @@ for i in range(len(inlierMatches)):
     worldsPtsb.append(get_coordinate(inlierMatches[i][1], Db))
     worldsPtsb[i].append(1)
 
-##    imPtsa.append([matches[i][0].pt[0], matches[i][0].pt[1]])
-##    imPtsa[i].append(1)
-##    imPtsb.append([matches[i][1].pt[0], matches[i][1].pt[1]])
-##    imPtsb[i].append(1)
-##    worldsPtsa.append(get_coordinate(matches[i][0], Da))
-##    worldsPtsa[i].append(1)
-##    worldsPtsb.append(get_coordinate(matches[i][1], Db))
-##    worldsPtsb[i].append(1)
-
-x0 = np.array([0,0,0,0,0,1])
+x0 = np.array([0,0,0,0,0,0])
 optRes = least_squares(estimateMotion, x0, method='lm',
                        args=(imPtsa, imPtsb, worldsPtsa, worldsPtsb, CamMatrix))
 
-'''
-keypoints_fail = matches[-2]
-outputA = Ja_L
-outputA = cv2.drawKeypoints(Ja_L, [keypoints_fail[0]], outputA, (255,0,0))
-outputB = Jb_L
-outputB=cv2.drawKeypoints(Jb_L, [keypoints_fail[1]], outputB, (0,255,0))
+# Print the found parameters and the transformation matrix coresponding
+print(optRes.x)
+print(createTransfomrationMatrix(optRes.x))
 
-output = np.concatenate((outputA, outputB) , axis=0)   #cv2.vconcat(outputA, outputB)
-cv2.imshow('output', output)
-cv2.waitKey(0)
-cv2.destroyAllWindows()
+#Draw and save the keypoints that have been retained
+output = Ja_L
+kpaa=np.asarray(inlierMatches)[:,0]
+output = cv2.drawKeypoints(Ja_L, kpaa, output)
+output2 = Jb_L
+kpbb=np.asarray(inlierMatches)[:,1]
+output2 = cv2.drawKeypoints(Jb_L, kpbb, output2)
+cv2.imwrite('keypointsA.png', output)
+cv2.imwrite('keypointsB.png', output2)
 
-
-
-im_L = cv2.hconcat([Ja_L, Jb_L])
-
-for match in matchesIndexes:
-    Point_a = Kpa[match[0]].pt
-    Point_b = Kpb[match[1]].pt
-    cv2.line(im_L, (int(Point_a[0]),int(Point_a[1])),
-             (int(Point_b[0] + 1242),int(Point_b[1])),
+#Draw and save the matches that have been retained
+image = cv2.vconcat([Ja_L, Jb_L])
+for match in inlierMatches:
+    Point_a = match[0].pt
+    Point_b = match[1].pt
+    cv2.line(image, (int(Point_a[0]),int(Point_a[1])),
+             (int(Point_b[0]),int(Point_b[1] + 370)),
              (random.randrange(255), random.randrange(255), random.randrange(255)))
-    
-cv2.imshow('output', im_L)
-cv2.waitKey(0)
-cv2.destroyAllWindows()
-'''
+cv2.imwrite('matches.png', image)
 
+#Save disparity images
+cv2.imwrite('Da.png',Da)
+cv2.imwrite('Db.png',Db)
+
+#Save images used
+cv2.imwrite('La.png',Ja_L)
+cv2.imwrite('Lb.png',Jb_L)
+
+cv2.imwrite('Ra.png',Ja_R)
+cv2.imwrite('Rb.png',Jb_R)
