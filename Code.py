@@ -4,7 +4,6 @@ import random
 from scipy.spatial import distance
 from scipy.optimize import least_squares
 from math import cos, sin
-import matplotlib.pyplot as plt
 
 
 # Parameters for the disparity map computation
@@ -309,7 +308,7 @@ cv2.imwrite('keypointsA.png', output)
 cv2.imwrite('keypointsB.png', output2)
 
 #Draw and save the matches that have been retained
-image = cv2.vconcat([Ja_L, Jb_L])
+image = cv2.vconcat([output, output2])
 for match in inlierMatches:
     Point_a = match[0].pt
     Point_b = match[1].pt
